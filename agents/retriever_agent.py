@@ -78,7 +78,9 @@ class RetrieverAgent(BaseAgent):
         ref_file = self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json"
         
         if retrieval_setting in ["auto", "random"] and not ref_file.exists():
-            print(f"Warning: Reference file not found at {ref_file}. Falling back to retrieval_setting='none'.")
+            if not getattr(self, "_warning_printed_auto", False):
+                print(f"Warning: Reference file not found at {ref_file}. Falling back to retrieval_setting='none'.")
+                self._warning_printed_auto = True
             retrieval_setting = "none"
         
         if retrieval_setting == "manual":

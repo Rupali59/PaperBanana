@@ -21,6 +21,7 @@ import json
 import asyncio
 import base64
 import re
+from typing import Optional
 from google.genai import types
 
 from prompts import diagram_eval_prompts, plot_eval_prompts
@@ -63,7 +64,7 @@ TASK_CONFIG = {
 }
 
 
-def _try_regex_extract_winner(text: str) -> str | None:
+def _try_regex_extract_winner(text: str) -> Optional[str]:
     """Try to extract winner field using regex as a fallback."""
     patterns = [
         r'"winner"\s*:\s*"([^"]+)"',  # Standard JSON: "winner": "value"

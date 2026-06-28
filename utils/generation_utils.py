@@ -51,29 +51,28 @@ def get_config_val(section, key, env_var, default=""):
 
 # Initialize clients lazily or with robust defaults
 api_key = get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", "")
+gcp_project = get_config_val("google_cloud", "project_id", "GOOGLE_CLOUD_PROJECT", "")
+gcp_location = get_config_val("google_cloud", "location", "GOOGLE_CLOUD_LOCATION", "us-central1")
+
 if api_key:
-    gemini_client = genai.Client(api_key=api_key)
-    print("Initialized Gemini Client with API Key")
+    print("Gemini API Key found for initialization")
+elif gcp_project:
+    print(f"Vertex AI config found for initialization (project: {gcp_project}, location: {gcp_location})")
 else:
-    print("Warning: Could not initialize Gemini Client. Missing credentials.")
-    gemini_client = None
+    print("Warning: Could not configure Gemini Client. Missing credentials.")
 
 
 anthropic_api_key = get_config_val("api_keys", "anthropic_api_key", "ANTHROPIC_API_KEY", "")
 if anthropic_api_key:
-    anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-    print("Initialized Anthropic Client with API Key")
+    print("Anthropic API Key found for initialization")
 else:
-    print("Warning: Could not initialize Anthropic Client. Missing credentials.")
-    anthropic_client = None
+    print("Warning: Could not configure Anthropic Client. Missing credentials.")
 
 openai_api_key = get_config_val("api_keys", "openai_api_key", "OPENAI_API_KEY", "")
 if openai_api_key:
-    openai_client = AsyncOpenAI(api_key=openai_api_key)
-    print("Initialized OpenAI Client with API Key")
+    print("OpenAI API Key found for initialization")
 else:
-    print("Warning: Could not initialize OpenAI Client. Missing credentials.")
-    openai_client = None
+    print("Warning: Could not configure OpenAI Client. Missing credentials.")
 
 
 
@@ -103,13 +102,17 @@ async def call_gemini_with_retry_async(
     """
     ASYNC: Call Gemini API with asynchronous retry logic.
     """
-    if gemini_client is None:
+    if not (api_key or gcp_project):
         raise RuntimeError(
-            "Gemini client was not initialized: missing Google API key. "
-            "Please set GOOGLE_API_KEY in environment, or configure api_keys.google_api_key in configs/model_config.yaml."
+            "Gemini client cannot be initialized: missing Google API key or GCP project. "
+            "Please set GOOGLE_API_KEY / GOOGLE_CLOUD_PROJECT in environment, or configure in configs/model_config.yaml."
         )
 
     result_list = []
+    
+    if config.candidate_count is None:
+        config.candidate_count = 1
+        
     target_candidate_count = config.candidate_count
     # Gemini API max candidate count is 8. We will call multiple times if needed.
     if config.candidate_count > 8:
@@ -118,8 +121,11 @@ async def call_gemini_with_retry_async(
     current_contents = contents
     for attempt in range(max_attempts):
         try:
-            # Use global client
-            client = gemini_client
+            # Dynamically create client inside the active loop
+            if api_key:
+                client = genai.Client(api_key=api_key)
+            else:
+                client = genai.Client(vertexai=True, project=gcp_project, location=gcp_location)
 
             # Convert generic content list to Gemini's format right before the API call
             gemini_contents = _convert_to_gemini_parts(current_contents)
@@ -162,6 +168,8 @@ async def call_gemini_with_retry_async(
                 break
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             context_msg = f" for {error_context}" if error_context else ""
             
             # Exponential backoff (capped at 30s)
@@ -241,6 +249,9 @@ async def call_claude_with_retry_async(
     This version efficiently handles input size errors by validating and modifying
     the content list once before generating all candidates.
     """
+    if not anthropic_api_key:
+        raise RuntimeError("Missing Anthropic API Key")
+    anthropic_client_local = AsyncAnthropic(api_key=anthropic_api_key)
     system_prompt = config["system_prompt"]
     temperature = config["temperature"]
     candidate_num = config["candidate_num"]
@@ -260,7 +271,7 @@ async def call_claude_with_retry_async(
         try:
             claude_contents = _convert_to_claude_format(current_contents)
             # Attempt to generate the very first candidate.
-            first_response = await anthropic_client.messages.create(
+            first_response = await anthropic_client_local.messages.create(
                 model=model_name,
                 max_tokens=max_output_tokens,
                 temperature=temperature,
@@ -295,7 +306,7 @@ async def call_claude_with_retry_async(
         )
         valid_claude_contents = _convert_to_claude_format(current_contents)
         tasks = [
-            anthropic_client.messages.create(
+            anthropic_client_local.messages.create(
                 model=model_name,
                 max_tokens=max_output_tokens,
                 temperature=temperature,
@@ -324,6 +335,9 @@ async def call_openai_with_retry_async(
     ASYNC: Call OpenAI API with asynchronous retry logic.
     This follows the same pattern as Claude's implementation.
     """
+    if not openai_api_key:
+        raise RuntimeError("Missing OpenAI API Key")
+    openai_client_local = AsyncOpenAI(api_key=openai_api_key)
     system_prompt = config["system_prompt"]
     temperature = config["temperature"]
     candidate_num = config["candidate_num"]
@@ -341,7 +355,7 @@ async def call_openai_with_retry_async(
         try:
             openai_contents = _convert_to_openai_format(current_contents)
             # Attempt to generate the very first candidate.
-            first_response = await openai_client.chat.completions.create(
+            first_response = await openai_client_local.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -379,7 +393,7 @@ async def call_openai_with_retry_async(
         )
         valid_openai_contents = _convert_to_openai_format(current_contents)
         tasks = [
-            openai_client.chat.completions.create(
+            openai_client_local.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -430,7 +444,10 @@ async def call_openai_image_generation_with_retry_async(
 
     for attempt in range(max_attempts):
         try:
-            response = await openai_client.images.generate(**gen_params)
+            if not openai_api_key:
+                raise RuntimeError("Missing OpenAI API Key")
+            openai_client_local = AsyncOpenAI(api_key=openai_api_key)
+            response = await openai_client_local.images.generate(**gen_params)
             
             # OpenAI images.generate returns a list of images in response.data
             if response.data and response.data[0].b64_json:

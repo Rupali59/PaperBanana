@@ -20,8 +20,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
-
+from typing import Literal, Optional
 
 @dataclass
 class ExpConfig:
@@ -38,7 +37,7 @@ class ExpConfig:
     image_model_name: str = ""
     work_dir: Path = Path(__file__).parent.parent
 
-    timestamp: str | None = None
+    timestamp: Optional[str] = None
 
     def __post_init__(self):
         os.environ["TZ"] = "America/Los_Angeles" # set the timezone as you like
